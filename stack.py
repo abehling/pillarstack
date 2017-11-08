@@ -13,7 +13,8 @@ from jinja2 import FileSystemLoader, Environment
 # Import Salt libs
 import salt.ext.six as six
 import salt.utils
-
+import salt.config
+import salt.fileserver
 
 log = logging.getLogger(__name__)
 strategies = ('overwrite', 'merge-first', 'merge-last', 'remove')
@@ -37,7 +38,23 @@ def ext_pillar(minion_id, pillar, *args, **kwargs):
             cfgs = [cfgs]
         stack_config_files += cfgs
     for cfg in stack_config_files:
-        if not os.path.isfile(cfg):
+        if cfg.startswith('salt://'):
+            log.debug('Trying fileserver...')
+            master_opts = salt.config.master_config('/etc/salt/master')
+            fs = salt.fileserver.Fileserver(master_opts)
+            # Hacky stuff 
+            # TODO: Find a better solution to update fileserver cache
+            # TODO: Either implement or get rid of salt environments
+            top_cfg_path = cfg.replace('salt://','').split('/')[0]
+            for file in fs.file_list({'saltenv': 'base'}):
+                if file.startswith(top_cfg_path):
+                    log.debug('Updating cache for {0}'.format(file))
+                    fs.find_file(file, 'base')
+            # Hacky stuff end ;)
+            cfg = fs.find_file(cfg.replace('salt://', ''), 'base')['path']
+            log.debug('Real path: {0}'.format(cfg))
+        elif not os.path.isfile(cfg):
+
             log.warning('Ignoring pillar stack cfg "{0}": '
                      'file does not exist'.format(cfg))
             continue
