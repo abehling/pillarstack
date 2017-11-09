@@ -38,27 +38,22 @@ def ext_pillar(minion_id, pillar, *args, **kwargs):
             cfgs = [cfgs]
         stack_config_files += cfgs
     for cfg in stack_config_files:
+        backend = {}
+        backend['type'] = 'default'
         if cfg.startswith('salt://'):
+            backend['type'] = 'fileserver'
+            backend['opts'] = {}
+            backend['opts']['dir'] = cfg.replace('salt://','').split('/')[0]
             log.debug('Trying fileserver...')
             master_opts = salt.config.master_config('/etc/salt/master')
             fs = salt.fileserver.Fileserver(master_opts)
-            # Hacky stuff 
-            # TODO: Find a better solution to update fileserver cache
-            # TODO: Either implement or get rid of salt environments
-            top_cfg_path = cfg.replace('salt://','').split('/')[0]
-            for file in fs.file_list({'saltenv': 'base'}):
-                if file.startswith(top_cfg_path):
-                    log.debug('Updating cache for {0}'.format(file))
-                    fs.find_file(file, 'base')
-            # Hacky stuff end ;)
             cfg = fs.find_file(cfg.replace('salt://', ''), 'base')['path']
             log.debug('Real path: {0}'.format(cfg))
         elif not os.path.isfile(cfg):
-
             log.warning('Ignoring pillar stack cfg "{0}": '
                      'file does not exist'.format(cfg))
             continue
-        stack = _process_stack_cfg(cfg, stack, minion_id, pillar)
+        stack = _process_stack_cfg(cfg, stack, minion_id, pillar, backend)
     return stack
 
 
@@ -70,7 +65,7 @@ def _construct_unicode(loader, node):
     return node.value
 
 
-def _process_stack_cfg(cfg, stack, minion_id, pillar):
+def _process_stack_cfg(cfg, stack, minion_id, pillar, backend):
     log.debug('Config: {0}'.format(cfg))
     basedir, filename = os.path.split(cfg)
     yaml.SafeLoader.add_constructor("tag:yaml.org,2002:python/unicode", _construct_unicode)
@@ -85,10 +80,19 @@ def _process_stack_cfg(cfg, stack, minion_id, pillar):
         "minion_id": minion_id,
         "pillar": pillar,
         })
+    if backend.get('type', 'default') == 'fileserver':
+        log.debug('Instanciating Fileserver object...')
+        master_opts = salt.config.master_config('/etc/salt/master')
+        fs = salt.fileserver.Fileserver(master_opts)
     for item in _parse_stack_cfg(
             jenv.get_template(filename).render(stack=stack)):
         if not item.strip():
             continue  # silently ignore whitespace or empty lines
+        if backend.get('type', 'default') == 'fileserver':
+            log.debug('File object is located in Fileserver. Checking cache location for item: {0}'.format(item))
+            if not os.path.isfile(os.path.join(basedir, item)):
+                log.debug('Updating file cache for item: {dir}/{file}'.format(dir=backend['opts']['dir'], file=item))
+                fs.find_file('{dir}/{file}'.format(dir=backend['opts']['dir'], file=item), 'base')
         paths = glob(os.path.join(basedir, item))
         if not paths:
             log.warning('Ignoring pillar stack template "{0}": can\'t find from '
